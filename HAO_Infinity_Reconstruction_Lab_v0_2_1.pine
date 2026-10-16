@@ -1,0 +1,727 @@
+//@version=6
+indicator("HAO ∞ — Reconstruction Lab v0.2.1", shorttitle = "HAO∞ v0.2.1", overlay = false, max_labels_count = 500)
+
+// ============================================================================
+// HAO ∞ — clean-room reconstruction lab
+// v0.2.1: liquidity memory + confirmed role reversal + asymmetric surface decay + tiny Guide HUD + expanded candle palettes.
+// v0.2 and v0.1 ribbon engines remain selectable and mathematically preserved.
+// ============================================================================
+
+const string GROUP_CORE = "Core RSI"
+const string GROUP_MA = "RSI Moving Average"
+const string GROUP_VISUAL = "Visual / Theme"
+const string GROUP_ZONES = "Structural Zones"
+const string GROUP_HA = "Heiken Ashi Oscillator"
+const string GROUP_FLOW = "Liquidity / Flow"
+const string GROUP_RIBBON = "Liquidity Support / Resistance"
+const string GROUP_EVENTS = "Structure / Events"
+const string GROUP_STRUCTURE = "HA Structure Personality"
+const string GROUP_CAL = "Reconstruction Calibration"
+const string GROUP_HUD = "HAO Guide HUD"
+
+const float LEVEL_OB = 30.0
+const float LEVEL_RANGE_HI = 10.0
+const float LEVEL_ZERO = 0.0
+const float LEVEL_RANGE_LO = -10.0
+const float LEVEL_OS = -30.0
+
+const int EVENT_RANGE = 0
+const int EVENT_BULL_BREAKOUT = 1
+const int EVENT_BEAR_BREAKOUT = -1
+const int EVENT_FAILED_BULL_BREAK = 2
+const int EVENT_FAILED_BEAR_BREAK = -2
+const int EVENT_BULL_CONTINUATION = 3
+const int EVENT_BEAR_CONTINUATION = -3
+const int EVENT_COMPRESSION = 4
+const int EVENT_TRANSITION = 5
+
+const int STRUCT_BULL_IMPULSE = 3
+const int STRUCT_BULL_HOLD = 2
+const int STRUCT_BULL_WEAKENING = 1
+const int STRUCT_NEUTRAL = 0
+const int STRUCT_BEAR_WEAKENING = -1
+const int STRUCT_BEAR_HOLD = -2
+const int STRUCT_BEAR_IMPULSE = -3
+
+rsiLength = input.int(14, "RSI Length", minval = 2, group = GROUP_CORE)
+showRsi = input.bool(true, "Show RSI", group = GROUP_CORE)
+rsiColor = input.color(color.rgb(230, 244, 0), "RSI Color", group = GROUP_CORE)
+rsiWidth = input.int(1, "RSI Line Width", minval = 1, maxval = 4, group = GROUP_CORE)
+
+showRsiMa = input.bool(true, "Show RSI Moving Average", group = GROUP_MA)
+rsiMaType = input.string("SMA", "MA Type", options = ["SMA", "EMA", "RMA", "WMA", "HMA"], group = GROUP_MA)
+rsiMaLength = input.int(14, "MA Length", minval = 1, group = GROUP_MA)
+rsiMaWidth = input.int(1, "RSI MA Line Width", minval = 1, maxval = 4, group = GROUP_MA)
+rsiMaColor = input.color(color.rgb(234, 139, 0), "RSI MA Color", group = GROUP_MA)
+
+theme = input.string("Deep Ocean", "Theme", options = ["Deep Ocean", "Aurora"], group = GROUP_VISUAL)
+displayMode = input.string("Focus", "Display Mode", options = ["Focus", "Clean", "Research", "Diagnostic"], group = GROUP_VISUAL)
+useThemeColors = input.bool(true, "Use Theme Colors", group = GROUP_VISUAL)
+
+hudMode = input.string("Guide", "HUD Mode", options = ["Off", "Guide", "Technical"], group = GROUP_HUD, tooltip = "Guide translates HAO into simple language. Technical keeps the same four tiny rows and appends compact values.")
+hudPositionInput = input.string("Top Right", "HUD Position", options = ["Top Right", "Top Left", "Bottom Right"], group = GROUP_HUD)
+hudTransparency = input.int(88, "HUD Background Transparency", minval = 70, maxval = 95, group = GROUP_HUD, tooltip = "Tiny white text with state-colored backgrounds. Higher values are more transparent.")
+showBackground = input.bool(true, "Use Background?", group = GROUP_ZONES)
+rangeColorInput = input.color(color.new(color.rgb(88, 80, 20), 88), "Ranging Color", group = GROUP_ZONES)
+bullZoneColorInput = input.color(color.new(color.rgb(0, 105, 90), 88), "Bull Side Color", group = GROUP_ZONES)
+bearZoneColorInput = input.color(color.new(color.rgb(130, 35, 40), 88), "Bear Side Color", group = GROUP_ZONES)
+
+f_ma(float src, simple int length, simple string maType) =>
+    switch maType
+        "EMA" => ta.ema(src, length)
+        "RMA" => ta.rma(src, length)
+        "WMA" => ta.wma(src, length)
+        "HMA" => ta.hma(src, length)
+        => ta.sma(src, length)
+
+f_visible(string mode, string element) =>
+    switch element
+        "HA" => true
+        "RIBBON" => true
+        "POC" => true
+        "RSI" => mode != "Clean"
+        "RSI_MA" => mode != "Clean"
+        "BACKGROUND" => mode != "Clean"
+        "EVENTS" => mode == "Focus" or mode == "Research" or mode == "Diagnostic"
+        "RESEARCH" => mode == "Research" or mode == "Diagnostic"
+        "DIAGNOSTIC" => mode == "Diagnostic"
+        => true
+
+f_theme_color(string themeName, string role, float intensity) =>
+    float k = math.max(0.0, math.min(1.0, intensity))
+    bool ocean = themeName == "Deep Ocean"
+    color bullWeak = ocean ? color.rgb(0, 72, 86) : color.rgb(46, 150, 92)
+    color bullStrong = ocean ? color.rgb(0, 238, 210) : color.rgb(100, 255, 196)
+    color bearWeak = ocean ? color.rgb(96, 20, 38) : color.rgb(138, 40, 125)
+    color bearStrong = ocean ? color.rgb(245, 62, 72) : color.rgb(255, 88, 112)
+    color transitionWeak = ocean ? color.rgb(45, 66, 105) : color.rgb(74, 76, 190)
+    color transitionStrong = ocean ? color.rgb(55, 174, 210) : color.rgb(184, 82, 230)
+    color neutralWeak = ocean ? color.rgb(20, 38, 58) : color.rgb(56, 63, 90)
+    color neutralStrong = ocean ? color.rgb(104, 144, 158) : color.rgb(145, 155, 190)
+    switch role
+        "Bull" => color.from_gradient(k, 0.0, 1.0, bullWeak, bullStrong)
+        "Bear" => color.from_gradient(k, 0.0, 1.0, bearWeak, bearStrong)
+        "Transition" => color.from_gradient(k, 0.0, 1.0, transitionWeak, transitionStrong)
+        "RSI" => ocean ? color.rgb(220, 245, 35) : color.rgb(220, 255, 80)
+        "RSI_MA" => ocean ? color.rgb(245, 146, 35) : color.rgb(255, 168, 70)
+        "Range" => ocean ? color.rgb(92, 84, 28) : color.rgb(88, 62, 118)
+        => color.from_gradient(k, 0.0, 1.0, neutralWeak, neutralStrong)
+
+float rsiCentered = ta.rsi(close, rsiLength) - 50.0
+float rsiMa = f_ma(rsiCentered, rsiMaLength, rsiMaType)
+
+// Fixed oscillator geometry. The original public UI exposes these exact levels.
+hOb = hline(LEVEL_OB, "OverBought", color = color.new(color.teal, 20))
+hRangeHi = hline(LEVEL_RANGE_HI, "Upper Range", color = color.new(color.aqua, 45))
+hZero = hline(LEVEL_ZERO, "Midline", color = color.new(color.olive, 25), linestyle = hline.style_dotted)
+hRangeLo = hline(LEVEL_RANGE_LO, "Lower Range", color = color.new(color.aqua, 45))
+hOs = hline(LEVEL_OS, "OverSold", color = color.new(color.teal, 20))
+
+color bullZoneColor = useThemeColors ? color.new(f_theme_color(theme, "Bull", 0.45), 88) : bullZoneColorInput
+color rangeZoneColor = useThemeColors ? color.new(f_theme_color(theme, "Range", 0.45), 90) : rangeColorInput
+color bearZoneColor = useThemeColors ? color.new(f_theme_color(theme, "Bear", 0.45), 88) : bearZoneColorInput
+bool showZoneFields = showBackground and f_visible(displayMode, "BACKGROUND")
+fill(hZero, hOb, color = showZoneFields ? bullZoneColor : na, title = "Bull Field 0 to +30")
+fill(hRangeLo, hRangeHi, color = showZoneFields ? rangeZoneColor : na, title = "Ranging Field -10 to +10")
+fill(hOs, hZero, color = showZoneFields ? bearZoneColor : na, title = "Bear Field -30 to 0")
+
+
+
+// ============================================================================
+// Oscillator Heiken-Ashi reconstruction engine
+// ============================================================================
+haLookback = input.int(14, "Heiken Ashi Lookback", minval = 2, group = GROUP_HA)
+haModel = input.string("Model A", "HA Source Model", options = ["Model A", "Model B — Experimental", "Model C — Experimental"], group = GROUP_CAL, tooltip = "Model A is the fidelity-first default. Models B/C are experimental calibration probes.")
+showHaCandles = input.bool(true, "Show Custom Heiken Ashi Candles", group = GROUP_HA)
+structureAwareColors = input.bool(true, "Structure-Aware Candle Colors", group = GROUP_HA)
+candlePalette = input.string("Deep Ocean Adaptive", "HA Candle Palette", options = ["Deep Ocean Adaptive", "Black Flag", "Aurora", "Classic", "Custom", "Reference Geometry"], group = GROUP_HA, tooltip = "Deep Ocean Adaptive is the HAO default. Black Flag is a darker muted wine/teal alternative. Reference Geometry suppresses confidence styling for calibration.")
+haBullColor = input.color(color.rgb(50, 220, 85), "Custom Heiken Ashi Bull Color", group = GROUP_HA)
+haBearColor = input.color(color.rgb(210, 20, 25), "Custom Heiken Ashi Bear Color", group = GROUP_HA)
+
+f_clamp50(float x) =>
+    math.max(-50.0, math.min(50.0, x))
+
+f_osc_ohlc(simple string model, simple int length) =>
+    // Model A: direct centered RSI for each OHLC stream.
+    float aO = ta.rsi(open, length) - 50.0
+    float aH = ta.rsi(high, length) - 50.0
+    float aL = ta.rsi(low, length) - 50.0
+    float aC = ta.rsi(close, length) - 50.0
+
+    // Shared experimental normalization. All branches are evaluated every bar
+    // to keep recursive/rolling calculations stable in Pine.
+    float atrLocal = math.max(nz(ta.atr(length), syminfo.mintick), syminfo.mintick)
+    float priorPriceClose = nz(close[1], close)
+    float priorOscClose = nz(aC[1], aC)
+    float response = 8.0 / atrLocal
+
+    // Model B: prior close-RSI anchor plus normalized current OHLC displacement.
+    float bO = f_clamp50(priorOscClose + (open - priorPriceClose) * response)
+    float bC = aC
+    float bHProbe = f_clamp50(priorOscClose + (high - priorPriceClose) * response)
+    float bLProbe = f_clamp50(priorOscClose + (low - priorPriceClose) * response)
+    float bH = math.max(math.max(bO, bC), bHProbe)
+    float bL = math.min(math.min(bO, bC), bLProbe)
+
+    // Model C: close RSI is the anchor; high/low become ATR-normalized excursions.
+    float cO = priorOscClose
+    float cC = aC
+    float cHProbe = f_clamp50(cC + math.max(high - close, 0.0) * response)
+    float cLProbe = f_clamp50(cC + math.min(low - close, 0.0) * response)
+    float cH = math.max(math.max(cO, cC), cHProbe)
+    float cL = math.min(math.min(cO, cC), cLProbe)
+
+    switch model
+        "Model B — Experimental" => [bO, bH, bL, bC]
+        "Model C — Experimental" => [cO, cH, cL, cC]
+        => [aO, aH, aL, aC]
+
+f_ha_transform(float o, float h, float l, float c, float prevHaOpen, float prevHaClose) =>
+    bool valid = not na(o) and not na(h) and not na(l) and not na(c)
+    float nextClose = valid ? (o + h + l + c) / 4.0 : na
+    float seedOpen = valid ? (o + c) / 2.0 : na
+    float nextOpen = valid ? (na(prevHaOpen) or na(prevHaClose) ? seedOpen : (prevHaOpen + prevHaClose) / 2.0) : na
+    float nextHigh = valid ? math.max(h, math.max(nextOpen, nextClose)) : na
+    float nextLow = valid ? math.min(l, math.min(nextOpen, nextClose)) : na
+    [nextOpen, nextHigh, nextLow, nextClose]
+
+[oscOpen, oscHigh, oscLow, oscClose] = f_osc_ohlc(haModel, haLookback)
+
+var float haOpen = na
+var float haHigh = na
+var float haLow = na
+var float haClose = na
+[nextHaOpen, nextHaHigh, nextHaLow, nextHaClose] = f_ha_transform(oscOpen, oscHigh, oscLow, oscClose, haOpen[1], haClose[1])
+haOpen := nextHaOpen
+haHigh := nextHaHigh
+haLow := nextHaLow
+haClose := nextHaClose
+
+bool haGeometryOk = na(haOpen) or na(haHigh) or na(haLow) or na(haClose) or (haHigh >= math.max(haOpen, haClose) and haLow <= math.min(haOpen, haClose))
+
+
+// ============================================================================
+// Accumulation / distribution flow engine
+// ============================================================================
+flowLength = input.int(14, "Flow Length", minval = 2, group = GROUP_CAL)
+flowSmoothing = input.int(5, "Flow Smoothing", minval = 1, group = GROUP_CAL)
+flowNormLength = input.int(50, "Flow Normalization Length", minval = 10, group = GROUP_CAL)
+atrLength = input.int(14, "ATR Length", minval = 2, group = GROUP_FLOW)
+atrBaselineLength = input.int(50, "ATR Baseline Length", minval = 10, group = GROUP_FLOW)
+
+f_safe_mfm(float h, float l, float c) =>
+    float span = h - l
+    float raw = na(span) or span == 0.0 ? 0.0 : ((c - l) - (h - c)) / span
+    math.max(-1.0, math.min(1.0, raw))
+
+f_tanh_bounded(float x) =>
+    // Pine-safe tanh equivalent with a pre-clamp to avoid exp overflow.
+    float xc = math.max(-6.0, math.min(6.0, x))
+    float e2x = math.exp(2.0 * xc)
+    (e2x - 1.0) / (e2x + 1.0)
+
+f_robust_norm(float src, simple int length) =>
+    float mean = ta.sma(src, length)
+    float deviation = ta.stdev(src, length)
+    float denom = math.max(nz(deviation, 0.0), 1e-10)
+    float z = na(src) or na(mean) or na(deviation) or deviation <= 1e-10 ? 0.0 : (src - mean) / denom
+    f_tanh_bounded(z)
+
+float mfm = f_safe_mfm(high, low, close)
+float safeVolume = na(volume) ? 0.0 : volume
+float mfv = mfm * safeVolume
+float adl = ta.cum(mfv)
+float adlVelocityRaw = adl - nz(adl[flowLength], adl)
+float adlVelocity = ta.ema(adlVelocityRaw, flowSmoothing)
+float flowPressure = math.max(-1.0, math.min(1.0, f_robust_norm(adlVelocity, flowNormLength)))
+
+float atrValue = ta.atr(atrLength)
+float atrBaseline = ta.ema(atrValue, atrBaselineLength)
+float atrDenom = math.max(nz(atrBaseline, atrValue), syminfo.mintick)
+float volFactor = math.max(0.65, math.min(1.75, nz(atrValue / atrDenom, 1.0)))
+bool flowFinite = not na(flowPressure) and math.abs(flowPressure) <= 1.000001 and not na(volFactor)
+
+bool showFlowResearch = f_visible(displayMode, "RESEARCH")
+plot(showFlowResearch ? flowPressure * 10.0 : na, "Flow Pressure ×10", color = color.new(color.aqua, 15), linewidth = 1)
+plot(showFlowResearch ? f_robust_norm(adlVelocity, flowNormLength) * 10.0 : na, "ADL Velocity (scaled)", color = color.new(color.fuchsia, 35), linewidth = 1)
+plot(showFlowResearch ? (volFactor - 1.0) * 10.0 : na, "ATR Factor (centered ×10)", color = color.new(color.silver, 35), linewidth = 1)
+
+
+
+// ============================================================================
+// Liquidity support / resistance ribbon + Point of Control
+// v0.2.1 default: memory-based one-sided control surface. v0.2 and v0.1 remain selectable.
+// ============================================================================
+showLiquidityRibbon = input.bool(true, "Display Liquidity Ribbon", group = GROUP_RIBBON)
+ribbonModel = input.string("Control Surface v0.2.1", "Ribbon Model", options = ["Control Surface v0.2.1", "Control Surface v0.2", "Flow Ribbon v0.1 (Legacy)"], group = GROUP_RIBBON, tooltip = "v0.2.1 adds liquidity memory and confirmed role reversal. v0.2 preserves the first one-sided fidelity model. v0.1 preserves the original reactive flow ribbon.")
+ribbonBullCustom = input.color(color.rgb(0, 200, 155), "Inflow (Accumulation)", group = GROUP_RIBBON)
+ribbonBearCustom = input.color(color.rgb(215, 40, 50), "Outflow (Distribution)", group = GROUP_RIBBON)
+ribbonSmoothType = input.string("SMOOTH", "S/R Moving Average Type", options = ["SMOOTH", "SMA", "EMA", "RMA", "WMA", "HMA"], group = GROUP_RIBBON)
+
+// Preserved v0.1 calibration controls.
+ribbonSmoothLength = input.int(14, "Ribbon Smoothing", minval = 2, group = GROUP_CAL)
+ribbonWidthFactor = input.float(3.0, "Ribbon Width Factor", minval = 0.25, maxval = 12.0, step = 0.05, group = GROUP_CAL, tooltip = "Used by Flow Ribbon v0.1 (Legacy).")
+ribbonShiftFactor = input.float(0.85, "Ribbon Shift Factor", minval = 0.0, maxval = 3.0, step = 0.05, group = GROUP_CAL, tooltip = "Used by Flow Ribbon v0.1 (Legacy).")
+ribbonDeadband = input.float(0.12, "Ribbon State Deadband", minval = 0.0, maxval = 0.75, step = 0.01, group = GROUP_CAL)
+
+// v0.2 control-surface calibration. Defaults intentionally damp HTF amplification.
+surfaceControlLength = input.int(14, "Surface Control Length", minval = 2, maxval = 100, group = GROUP_CAL)
+surfaceFlowSmoothing = input.int(8, "Surface Flow Inertia", minval = 1, maxval = 50, group = GROUP_CAL)
+surfaceTransitionSmoothing = input.int(3, "Surface Side Transition", minval = 1, maxval = 20, group = GROUP_CAL)
+surfaceShapeSmoothing = input.int(5, "Surface Shape Smoothing", minval = 1, maxval = 30, group = GROUP_CAL)
+surfaceBaseWidth = input.float(5.0, "Surface Base Thickness", minval = 0.5, maxval = 15.0, step = 0.1, group = GROUP_CAL)
+surfaceMaxWidth = input.float(8.0, "Surface Max Thickness", minval = 1.0, maxval = 20.0, step = 0.1, group = GROUP_CAL)
+surfaceVolatilityWeight = input.float(0.20, "Surface Volatility Influence", minval = 0.0, maxval = 1.0, step = 0.05, group = GROUP_CAL)
+surfaceDistanceWeight = input.float(0.15, "Surface Momentum Distance Influence", minval = 0.0, maxval = 0.75, step = 0.05, group = GROUP_CAL)
+
+// v0.2.1 liquidity-memory controls. Opposing flow weakens the active surface first;
+// the role flips only after momentum accepts beyond the Control/POC for N confirmed bars.
+surfaceAcceptanceBars = input.int(2, "Surface Acceptance Bars", minval = 1, maxval = 5, group = GROUP_CAL)
+surfaceAcceptanceBuffer = input.float(0.75, "Surface Acceptance Buffer", minval = 0.0, maxval = 5.0, step = 0.05, group = GROUP_CAL)
+surfaceAttackLength = input.int(3, "Surface Thickness Attack", minval = 1, maxval = 20, group = GROUP_CAL)
+surfaceDecayLength = input.int(12, "Surface Thickness Decay", minval = 2, maxval = 50, group = GROUP_CAL)
+
+f_smooth(float src, simple int length, simple string smoothType) =>
+    switch smoothType
+        "SMA" => ta.sma(src, length)
+        "EMA" => ta.ema(src, length)
+        "RMA" => ta.rma(src, length)
+        "WMA" => ta.wma(src, length)
+        "HMA" => ta.hma(src, length)
+        =>
+            int fastLen = math.max(1, int(math.round(length * 0.5)))
+            ta.ema(ta.ema(src, fastLen), math.max(2, length - fastLen + 1))
+
+// The original UI calls its S/R MA "SMOOTH". For the fidelity model we treat
+// SMOOTH as Wilder/SMMA-like inertia instead of the more responsive v0.1 double EMA.
+f_control_smooth(float src, simple int length, simple string smoothType) =>
+    switch smoothType
+        "SMOOTH" => ta.rma(src, length)
+        "SMA" => ta.sma(src, length)
+        "EMA" => ta.ema(src, length)
+        "RMA" => ta.rma(src, length)
+        "WMA" => ta.wma(src, length)
+        "HMA" => ta.hma(src, length)
+        => ta.rma(src, length)
+
+// Exact v0.1 geometry retained as a selectable alternative.
+f_ribbon_legacy(float momentum, float flowPressure, float volFactor, simple int smoothLength, float widthFactor, float shiftFactor) =>
+    float center = f_smooth(momentum, smoothLength, ribbonSmoothType)
+    float liquidityStrength = 0.65 + 0.85 * math.abs(flowPressure)
+    float ribbonWidth = math.max(0.75, math.min(12.0, widthFactor * volFactor * liquidityStrength))
+    float ribbonShift = -flowPressure * shiftFactor * ribbonWidth
+    float axis = center + ribbonShift
+    [center, ribbonWidth, ribbonShift, axis]
+
+f_ribbon_state(float flowPressure, float centerSlope, float deadband) =>
+    float slopeGate = deadband * 0.5
+    flowPressure > deadband and centerSlope >= -slopeGate ? 1 : flowPressure < -deadband and centerSlope <= slopeGate ? -1 : 0
+
+f_surface_strength(float pressure) =>
+    float p = math.max(0.0, math.min(1.0, math.abs(pressure)))
+    1.0 - math.exp(-2.0 * p)
+
+[legacyCenter, legacyWidth, legacyShift, legacyAxis] = f_ribbon_legacy(rsiCentered, flowPressure, volFactor, ribbonSmoothLength, ribbonWidthFactor, ribbonShiftFactor)
+float legacyUpper = legacyAxis + legacyWidth
+float legacyLower = legacyAxis - legacyWidth
+float legacyCenterSlope = legacyCenter - nz(legacyCenter[1], legacyCenter)
+
+// v0.2 / v0.2.1 share the slow support/resistance Control/POC.
+float controlLine = f_control_smooth(rsiCentered, surfaceControlLength, ribbonSmoothType)
+float controlSlope = controlLine - nz(controlLine[1], controlLine)
+
+// Preserve the original v0.2 role engine: flow can directly nominate the active side.
+float flowPressureSlow = ta.rma(flowPressure, surfaceFlowSmoothing)
+float reactiveStateSlope = ribbonModel == "Flow Ribbon v0.1 (Legacy)" ? legacyCenterSlope : controlSlope
+int reactiveRibbonStateCandidate = f_ribbon_state(flowPressure, reactiveStateSlope, ribbonDeadband)
+var int reactiveRibbonState = 0
+int priorReactiveRibbonState = nz(reactiveRibbonState[1], 0)
+reactiveRibbonState := barstate.isconfirmed ? (reactiveRibbonStateCandidate != 0 ? reactiveRibbonStateCandidate : priorReactiveRibbonState) : priorReactiveRibbonState
+
+// v0.2 geometry is retained byte-for-concept: one-sided surface, responsive role switching.
+float surfaceSideV02 = ta.ema(float(reactiveRibbonState), surfaceTransitionSmoothing)
+float surfaceStrengthV02 = f_surface_strength(flowPressureSlow)
+float surfaceDistance = math.min(1.0, math.abs(rsiCentered - controlLine) / 15.0)
+float surfaceVolAdjust = math.max(0.80, math.min(1.20, 1.0 + (volFactor - 1.0) * surfaceVolatilityWeight))
+float surfaceWidthRawV02 = surfaceBaseWidth * (0.38 + 0.50 * surfaceStrengthV02 + surfaceDistanceWeight * surfaceDistance) * surfaceVolAdjust
+float surfaceThicknessV02 = ta.rma(math.max(0.60, math.min(surfaceMaxWidth, surfaceWidthRawV02)), surfaceShapeSmoothing)
+float surfaceOuterV02 = controlLine + surfaceSideV02 * surfaceThicknessV02
+float surfaceLowerV02 = math.min(controlLine, surfaceOuterV02)
+float surfaceUpperV02 = math.max(controlLine, surfaceOuterV02)
+float surfaceActualWidthV02 = math.abs(surfaceOuterV02 - controlLine)
+
+// v0.2.1: role memory. Flow is candidate pressure; structure must accept beyond the Control/POC.
+bool bullAcceptanceRaw = not na(haClose) and flowPressureSlow > ribbonDeadband and haClose > controlLine + surfaceAcceptanceBuffer and rsiCentered > controlLine + surfaceAcceptanceBuffer * 0.5
+bool bearAcceptanceRaw = not na(haClose) and flowPressureSlow < -ribbonDeadband and haClose < controlLine - surfaceAcceptanceBuffer and rsiCentered < controlLine - surfaceAcceptanceBuffer * 0.5
+var int bullAcceptanceCount = 0
+var int bearAcceptanceCount = 0
+int priorBullAcceptanceCount = nz(bullAcceptanceCount[1], 0)
+int priorBearAcceptanceCount = nz(bearAcceptanceCount[1], 0)
+if barstate.isconfirmed
+    bullAcceptanceCount := bullAcceptanceRaw ? math.min(surfaceAcceptanceBars, priorBullAcceptanceCount + 1) : 0
+    bearAcceptanceCount := bearAcceptanceRaw ? math.min(surfaceAcceptanceBars, priorBearAcceptanceCount + 1) : 0
+bool bullAccepted = barstate.isconfirmed and bullAcceptanceCount >= surfaceAcceptanceBars
+bool bearAccepted = barstate.isconfirmed and bearAcceptanceCount >= surfaceAcceptanceBars
+
+var int ribbonStateMemory = 0
+int priorRibbonStateMemory = nz(ribbonStateMemory[1], 0)
+int nextRibbonStateMemory = priorRibbonStateMemory
+if priorRibbonStateMemory == 0
+    nextRibbonStateMemory := bullAccepted ? 1 : bearAccepted ? -1 : 0
+else if priorRibbonStateMemory == 1 and bearAccepted
+    nextRibbonStateMemory := -1
+else if priorRibbonStateMemory == -1 and bullAccepted
+    nextRibbonStateMemory := 1
+ribbonStateMemory := barstate.isconfirmed ? nextRibbonStateMemory : priorRibbonStateMemory
+
+// Fast attack + slow decay preserves broad liquidity lobes instead of collapsing them immediately.
+f_attack_decay(float target, float previous, float attackLength, float decayLength) =>
+    float safePrev = na(previous) ? target : previous
+    float attackAlpha = 2.0 / (math.max(1.0, attackLength) + 1.0)
+    float decayAlpha = 2.0 / (math.max(1.0, decayLength) + 1.0)
+    float alpha = target >= safePrev ? attackAlpha : decayAlpha
+    safePrev + alpha * (target - safePrev)
+
+float alignedPressure = ribbonStateMemory == 1 ? math.max(flowPressureSlow, 0.0) : ribbonStateMemory == -1 ? math.max(-flowPressureSlow, 0.0) : math.abs(flowPressureSlow) * 0.5
+float opposingPressure = ribbonStateMemory == 1 ? math.max(-flowPressureSlow, 0.0) : ribbonStateMemory == -1 ? math.max(flowPressureSlow, 0.0) : 0.0
+float alignedStrength = f_surface_strength(alignedPressure)
+float opposingStrength = f_surface_strength(opposingPressure)
+float weakeningFactor = math.max(0.30, 1.0 - 0.62 * opposingStrength)
+float surfaceWidthTargetV021 = surfaceBaseWidth * (0.34 + 0.54 * alignedStrength + surfaceDistanceWeight * surfaceDistance) * surfaceVolAdjust * weakeningFactor
+surfaceWidthTargetV021 := math.max(0.60, math.min(surfaceMaxWidth, surfaceWidthTargetV021))
+var float surfaceThicknessMemory = na
+float priorSurfaceThicknessMemory = nz(surfaceThicknessMemory[1], surfaceWidthTargetV021)
+float nextSurfaceThicknessMemory = f_attack_decay(surfaceWidthTargetV021, priorSurfaceThicknessMemory, float(surfaceAttackLength), float(surfaceDecayLength))
+surfaceThicknessMemory := barstate.isconfirmed ? nextSurfaceThicknessMemory : priorSurfaceThicknessMemory
+float surfaceSideV021 = ta.ema(float(ribbonStateMemory), surfaceTransitionSmoothing)
+float surfaceOuterV021 = controlLine + surfaceSideV021 * surfaceThicknessMemory
+float surfaceLowerV021 = math.min(controlLine, surfaceOuterV021)
+float surfaceUpperV021 = math.max(controlLine, surfaceOuterV021)
+float surfaceActualWidthV021 = math.abs(surfaceOuterV021 - controlLine)
+
+bool useMemorySurface = ribbonModel == "Control Surface v0.2.1"
+bool useV02Surface = ribbonModel == "Control Surface v0.2"
+bool useLegacyRibbon = ribbonModel == "Flow Ribbon v0.1 (Legacy)"
+int ribbonState = useMemorySurface ? ribbonStateMemory : reactiveRibbonState
+float selectedSurfaceSide = useMemorySurface ? surfaceSideV021 : surfaceSideV02
+float ribbonCenter = useLegacyRibbon ? legacyCenter : controlLine
+float ribbonWidth = useLegacyRibbon ? legacyWidth : useMemorySurface ? surfaceActualWidthV021 : surfaceActualWidthV02
+float ribbonShift = useLegacyRibbon ? legacyShift : useMemorySurface ? surfaceOuterV021 - controlLine : surfaceOuterV02 - controlLine
+float ribbonAxis = useLegacyRibbon ? legacyAxis : controlLine
+float ribbonUpper = useLegacyRibbon ? legacyUpper : useMemorySurface ? surfaceUpperV021 : surfaceUpperV02
+float ribbonLower = useLegacyRibbon ? legacyLower : useMemorySurface ? surfaceLowerV021 : surfaceLowerV02
+float poc = useLegacyRibbon ? (ribbonState == 1 ? legacyLower : ribbonState == -1 ? legacyUpper : legacyAxis) : controlLine
+bool ribbonGeometryOk = na(ribbonLower) or na(ribbonUpper) or ribbonLower <= ribbonUpper
+
+// ============================================================================
+// Range / breakout / failed-break / continuation / compression state engine
+// ============================================================================
+compressionLength = input.int(20, "Compression Lookback", minval = 5, group = GROUP_EVENTS)
+compressionThreshold = input.float(72.0, "Compression Threshold", minval = 40.0, maxval = 95.0, step = 1.0, group = GROUP_CAL)
+failedBreakMemory = input.int(4, "Failed Break Memory", minval = 1, maxval = 20, group = GROUP_CAL)
+showEventMarkers = input.bool(false, "Show Event Markers", group = GROUP_EVENTS, tooltip = "Off by default in v0.2 so ribbon/HA geometry remains easy to calibrate. Alerts remain active.")
+
+f_safe_ratio(float value, float baseline) =>
+    na(value) or na(baseline) or baseline <= 1e-10 ? 1.0 : math.max(0.0, math.min(2.0, value / baseline))
+
+f_compression(float haRange, float rsiVelocity, float ribbonWidth, float flowVelocity, simple int length) =>
+    float haBase = ta.sma(haRange, length)
+    float rsiAbs = math.abs(rsiVelocity)
+    float rsiBase = ta.sma(rsiAbs, length)
+    float widthBase = ta.sma(ribbonWidth, length)
+    float flowAbs = math.abs(flowVelocity)
+    float flowBase = ta.sma(flowAbs, length)
+    float haRatio = f_safe_ratio(haRange, haBase)
+    float rsiRatio = f_safe_ratio(rsiAbs, rsiBase)
+    float widthRatio = f_safe_ratio(ribbonWidth, widthBase)
+    float flowRatio = f_safe_ratio(flowAbs, flowBase)
+    float energy = (haRatio + rsiRatio + widthRatio + flowRatio) / 4.0
+    math.max(0.0, math.min(100.0, 100.0 * (1.0 - math.min(1.0, energy / 1.35))))
+
+f_event_state(float currentHaClose, float priorHaClose, float currentRsi, float upper, float lower, float pocValue, float flow, int ribbonDir, int priorEvent, bool failedBull, bool failedBear, float compScore, float compThreshold, bool confirmed) =>
+    bool valid = not na(currentHaClose) and not na(priorHaClose) and not na(currentRsi) and not na(upper) and not na(lower) and not na(pocValue)
+    bool bullBreak = valid and currentHaClose > upper and currentHaClose > pocValue and currentRsi > LEVEL_RANGE_HI and flow >= 0.0 and ribbonDir >= 0
+    bool bearBreak = valid and currentHaClose < lower and currentHaClose < pocValue and currentRsi < LEVEL_RANGE_LO and flow <= 0.0 and ribbonDir <= 0
+    bool bullContinuation = valid and ribbonDir == 1 and currentHaClose > pocValue and currentHaClose > priorHaClose and currentRsi > LEVEL_ZERO and flow >= 0.0
+    bool bearContinuation = valid and ribbonDir == -1 and currentHaClose < pocValue and currentHaClose < priorHaClose and currentRsi < LEVEL_ZERO and flow <= 0.0
+    bool inRange = valid and currentRsi <= LEVEL_RANGE_HI and currentRsi >= LEVEL_RANGE_LO
+    int nextState = priorEvent
+    if confirmed
+        nextState := failedBull ? EVENT_FAILED_BULL_BREAK : failedBear ? EVENT_FAILED_BEAR_BREAK : bullBreak ? EVENT_BULL_BREAKOUT : bearBreak ? EVENT_BEAR_BREAKOUT : bullContinuation ? EVENT_BULL_CONTINUATION : bearContinuation ? EVENT_BEAR_CONTINUATION : compScore >= compThreshold ? EVENT_COMPRESSION : inRange ? EVENT_RANGE : EVENT_TRANSITION
+    nextState
+
+float haRangeNow = not na(haHigh) and not na(haLow) ? math.max(0.0, haHigh - haLow) : na
+float rsiVelocity = rsiCentered - nz(rsiCentered[1], rsiCentered)
+float flowVelocity = flowPressure - nz(flowPressure[1], flowPressure)
+float compressionScore = f_compression(haRangeNow, rsiVelocity, ribbonWidth, flowVelocity, compressionLength)
+
+bool fullBullBreakNow = not na(haClose) and haClose > ribbonUpper and haClose > poc and rsiCentered > LEVEL_RANGE_HI and flowPressure >= 0.0
+bool fullBearBreakNow = not na(haClose) and haClose < ribbonLower and haClose < poc and rsiCentered < LEVEL_RANGE_LO and flowPressure <= 0.0
+bool bullProbe = barstate.isconfirmed and not na(haHigh) and haHigh > ribbonUpper and not fullBullBreakNow
+bool bearProbe = barstate.isconfirmed and not na(haLow) and haLow < ribbonLower and not fullBearBreakNow
+
+var int bullProbeAge = 10000
+var int bearProbeAge = 10000
+int priorBullProbeAge = nz(bullProbeAge[1], 10000)
+int priorBearProbeAge = nz(bearProbeAge[1], 10000)
+if barstate.isconfirmed
+    bullProbeAge := bullProbe ? 0 : math.min(10000, priorBullProbeAge + 1)
+    bearProbeAge := bearProbe ? 0 : math.min(10000, priorBearProbeAge + 1)
+
+bool failedBullBreak = barstate.isconfirmed and priorBullProbeAge <= failedBreakMemory and haClose < ribbonUpper and rsiCentered < LEVEL_RANGE_HI and flowPressure <= 0.15
+bool failedBearBreak = barstate.isconfirmed and priorBearProbeAge <= failedBreakMemory and haClose > ribbonLower and rsiCentered > LEVEL_RANGE_LO and flowPressure >= -0.15
+
+var int eventState = EVENT_RANGE
+int priorEventState = nz(eventState[1], EVENT_RANGE)
+eventState := f_event_state(haClose, nz(haClose[1], haClose), rsiCentered, ribbonUpper, ribbonLower, poc, flowPressure, ribbonState, priorEventState, failedBullBreak, failedBearBreak, compressionScore, compressionThreshold, barstate.isconfirmed)
+
+bool bullBreakoutAlert = barstate.isconfirmed and eventState == EVENT_BULL_BREAKOUT and priorEventState != EVENT_BULL_BREAKOUT
+bool bearBreakoutAlert = barstate.isconfirmed and eventState == EVENT_BEAR_BREAKOUT and priorEventState != EVENT_BEAR_BREAKOUT
+bool failedBullBreakAlert = barstate.isconfirmed and eventState == EVENT_FAILED_BULL_BREAK and priorEventState != EVENT_FAILED_BULL_BREAK
+bool failedBearBreakAlert = barstate.isconfirmed and eventState == EVENT_FAILED_BEAR_BREAK and priorEventState != EVENT_FAILED_BEAR_BREAK
+bool bullContinuationAlert = barstate.isconfirmed and eventState == EVENT_BULL_CONTINUATION and priorEventState != EVENT_BULL_CONTINUATION
+bool bearContinuationAlert = barstate.isconfirmed and eventState == EVENT_BEAR_CONTINUATION and priorEventState != EVENT_BEAR_CONTINUATION
+float rsiVelocityBaseline = ta.sma(math.abs(rsiVelocity), compressionLength)
+bool compressionReleaseAlert = barstate.isconfirmed and nz(compressionScore[1], 0.0) >= compressionThreshold and compressionScore < compressionThreshold and math.abs(rsiVelocity) > nz(rsiVelocityBaseline, 0.0)
+
+alertcondition(bullBreakoutAlert, "HAO Bull Breakout", "HAO ∞: confirmed bullish ribbon/POC breakout")
+alertcondition(bearBreakoutAlert, "HAO Bear Breakout", "HAO ∞: confirmed bearish ribbon/POC breakout")
+alertcondition(failedBullBreakAlert, "HAO Failed Bull Break", "HAO ∞: upside probe rejected back inside structure")
+alertcondition(failedBearBreakAlert, "HAO Failed Bear Break", "HAO ∞: downside probe rejected back inside structure")
+alertcondition(bullContinuationAlert, "HAO Bull Continuation", "HAO ∞: bullish POC defense and renewed expansion")
+alertcondition(bearContinuationAlert, "HAO Bear Continuation", "HAO ∞: bearish POC defense and renewed expansion")
+alertcondition(compressionReleaseAlert, "HAO Compression Release", "HAO ∞: compression state released with renewed momentum")
+
+
+// ============================================================================
+// Structure-aware HA candle personality
+// ============================================================================
+structureLookback = input.int(8, "Structure Lookback", minval = 3, maxval = 50, group = GROUP_STRUCTURE)
+
+f_structure_state(float hOpen, float hHigh, float hLow, float hClose, float priorHigh, float priorLow, int ribbonDir, float pocValue, float flow, float momentumSlope, float bodyExpansion) =>
+    bool valid = not na(hOpen) and not na(hHigh) and not na(hLow) and not na(hClose) and not na(priorHigh) and not na(priorLow) and not na(pocValue)
+    bool bullProgress = valid and hClose > priorHigh
+    bool bearProgress = valid and hClose < priorLow
+    bool bullDefense = valid and hClose > pocValue
+    bool bearDefense = valid and hClose < pocValue
+    int state = STRUCT_NEUTRAL
+    if valid
+        state := bullProgress and hClose >= hOpen and flow >= -0.05 and ribbonDir >= 0 ? STRUCT_BULL_IMPULSE : bearProgress and hClose <= hOpen and flow <= 0.05 and ribbonDir <= 0 ? STRUCT_BEAR_IMPULSE : ribbonDir == 1 and bullDefense and flow > -0.35 ? STRUCT_BULL_HOLD : ribbonDir == -1 and bearDefense and flow < 0.35 ? STRUCT_BEAR_HOLD : ribbonDir == 1 and (not bullDefense or flow < 0.0 or momentumSlope < 0.0) ? STRUCT_BULL_WEAKENING : ribbonDir == -1 and (not bearDefense or flow > 0.0 or momentumSlope > 0.0) ? STRUCT_BEAR_WEAKENING : STRUCT_NEUTRAL
+
+    float candleRange = valid ? math.max(math.abs(hHigh - hLow), 1e-9) : 1.0
+    float bodyStrength = valid ? math.min(1.0, math.abs(hClose - hOpen) / candleRange) : 0.0
+    float flowScore = math.min(1.0, math.abs(flow))
+    float expansionScore = math.min(1.0, math.max(0.0, bodyExpansion) / 1.5)
+    float progressScore = math.abs(state) == 3 ? 1.0 : math.abs(state) == 2 ? 0.65 : math.abs(state) == 1 ? 0.40 : 0.20
+    float defenseScore = (state > 0 and bullDefense) or (state < 0 and bearDefense) ? 1.0 : 0.25
+    float slopeScore = (state > 0 and momentumSlope >= 0.0) or (state < 0 and momentumSlope <= 0.0) ? 1.0 : 0.25
+    float confidence = 0.25 * progressScore + 0.20 * bodyStrength + 0.20 * flowScore + 0.20 * defenseScore + 0.10 * slopeScore + 0.05 * expansionScore
+    [state, math.max(0.0, math.min(1.0, confidence))]
+
+float priorStructureHigh = ta.highest(haHigh[1], structureLookback)
+float priorStructureLow = ta.lowest(haLow[1], structureLookback)
+float haBodySize = not na(haClose) and not na(haOpen) ? math.abs(haClose - haOpen) : na
+float haBodyBaseline = ta.sma(haBodySize, structureLookback)
+float haBodyExpansion = na(haBodySize) or na(haBodyBaseline) or haBodyBaseline <= 1e-9 ? 1.0 : math.max(0.0, math.min(2.0, haBodySize / haBodyBaseline))
+float momentumSlope = rsiMa - nz(rsiMa[1], rsiMa)
+[structureStateCandidate, structureConfidenceCandidate] = f_structure_state(haOpen, haHigh, haLow, haClose, priorStructureHigh, priorStructureLow, ribbonState, poc, flowPressure, momentumSlope, haBodyExpansion)
+var int structureState = STRUCT_NEUTRAL
+var float structureConfidence = 0.0
+structureState := barstate.isconfirmed ? structureStateCandidate : nz(structureState[1], STRUCT_NEUTRAL)
+structureConfidence := barstate.isconfirmed ? structureConfidenceCandidate : nz(structureConfidence[1], 0.0)
+
+float ribbonConviction = math.min(1.0, math.abs(useLegacyRibbon ? flowPressure : flowPressureSlow))
+int ribbonTransparency = int(math.round(math.max(38.0, math.min(88.0, 88.0 - ribbonConviction * 50.0))))
+int ribbonVisualState = useLegacyRibbon ? ribbonState : selectedSurfaceSide > 0.05 ? 1 : selectedSurfaceSide < -0.05 ? -1 : ribbonState
+string ribbonRole = ribbonVisualState == 1 ? "Bull" : ribbonVisualState == -1 ? "Bear" : "Neutral"
+color fallbackRibbonColor = ribbonVisualState == 1 ? ribbonBullCustom : ribbonVisualState == -1 ? ribbonBearCustom : color.rgb(105, 125, 135)
+color ribbonBaseColor = useThemeColors ? f_theme_color(theme, ribbonRole, ribbonConviction) : fallbackRibbonColor
+color ribbonFillColor = color.new(ribbonBaseColor, ribbonTransparency)
+color ribbonEdgeColor = color.new(ribbonBaseColor, math.max(15, ribbonTransparency - 25))
+color pocBaseColor = useThemeColors ? f_theme_color(theme, ribbonRole, math.min(1.0, ribbonConviction + 0.25)) : fallbackRibbonColor
+color pocColor = color.new(pocBaseColor, math.max(0, ribbonTransparency - 45))
+
+bool showRibbonVisual = showLiquidityRibbon and f_visible(displayMode, "RIBBON")
+bool showPocVisual = showLiquidityRibbon and f_visible(displayMode, "POC")
+ribbonLowerPlot = plot(showRibbonVisual ? ribbonLower : na, "Liquidity Ribbon Lower", color = ribbonEdgeColor, linewidth = 1)
+ribbonUpperPlot = plot(showRibbonVisual ? ribbonUpper : na, "Liquidity Ribbon Upper", color = ribbonEdgeColor, linewidth = 1)
+fill(ribbonLowerPlot, ribbonUpperPlot, color = showRibbonVisual ? ribbonFillColor : na, title = "Liquidity Ribbon")
+plot(showPocVisual ? poc : na, "Point of Control", color = pocColor, linewidth = 2)
+
+// Keep oscillator candles over the liquidity field for mobile readability.
+// Candle palette is independent from the ribbon theme so users can keep Deep Ocean,
+// choose a darker Black Flag interpretation, or use calibration/reference colors.
+f_candle_palette_color(string palette, string role, float intensity, bool bullishDirection, color customBull, color customBear) =>
+    float k = math.max(0.0, math.min(1.0, intensity))
+    color neutral = color.rgb(30, 35, 42)
+    color bullStrong = color.rgb(0, 224, 200)
+    color bearStrong = color.rgb(198, 42, 66)
+    color transitionStrong = color.rgb(74, 105, 138)
+    if palette == "Black Flag"
+        neutral := color.rgb(45, 43, 50)
+        bullStrong := color.rgb(84, 151, 132)
+        bearStrong := color.rgb(145, 24, 74)
+        transitionStrong := color.rgb(105, 73, 90)
+    else if palette == "Aurora"
+        neutral := color.rgb(48, 50, 68)
+        bullStrong := color.rgb(92, 255, 190)
+        bearStrong := color.rgb(255, 84, 118)
+        transitionStrong := color.rgb(172, 82, 224)
+    else if palette == "Classic"
+        neutral := color.rgb(105, 110, 115)
+        bullStrong := color.rgb(55, 205, 95)
+        bearStrong := color.rgb(205, 45, 52)
+        transitionStrong := neutral
+    else if palette == "Custom"
+        neutral := color.rgb(105, 110, 115)
+        bullStrong := customBull
+        bearStrong := customBear
+        transitionStrong := neutral
+    else if palette == "Reference Geometry"
+        neutral := color.rgb(70, 74, 74)
+        bullStrong := color.rgb(35, 45, 42)
+        bearStrong := color.rgb(155, 42, 38)
+        transitionStrong := neutral
+    color target = role == "Bull" ? bullStrong : role == "Bear" ? bearStrong : role == "Transition" ? transitionStrong : neutral
+    palette == "Reference Geometry" or palette == "Classic" or palette == "Custom" ? (role == "Neutral" ? neutral : target) : color.from_gradient(k, 0.0, 1.0, neutral, target)
+
+string structureRole = structureState > 0 ? "Bull" : structureState < 0 ? "Bear" : "Neutral"
+string directionRole = haClose >= haOpen ? "Bull" : "Bear"
+float structureIntensity = math.abs(structureState) == 3 ? 0.72 + 0.28 * structureConfidence : math.abs(structureState) == 2 ? 0.48 + 0.38 * structureConfidence : math.abs(structureState) == 1 ? 0.18 + 0.30 * structureConfidence : 0.18
+float directionIntensity = 0.76
+string candleRole = candlePalette == "Reference Geometry" ? directionRole : structureAwareColors ? structureRole : directionRole
+float candleIntensity = structureAwareColors ? structureIntensity : directionIntensity
+color finalHaColor = f_candle_palette_color(candlePalette, candleRole, candleIntensity, haClose >= haOpen, haBullColor, haBearColor)
+color effectiveRsiColor = useThemeColors ? f_theme_color(theme, "RSI", 1.0) : rsiColor
+color effectiveRsiMaColor = useThemeColors ? f_theme_color(theme, "RSI_MA", 1.0) : rsiMaColor
+bool showHaVisual = showHaCandles and f_visible(displayMode, "HA")
+plotcandle(showHaVisual ? haOpen : na, showHaVisual ? haHigh : na, showHaVisual ? haLow : na, showHaVisual ? haClose : na, title = "HA RSI Candles", color = finalHaColor, wickcolor = finalHaColor, bordercolor = finalHaColor)
+
+f_event_name(int state) =>
+    state == EVENT_BULL_BREAKOUT ? "BULL BREAK" : state == EVENT_BEAR_BREAKOUT ? "BEAR BREAK" : state == EVENT_FAILED_BULL_BREAK ? "FAIL BULL" : state == EVENT_FAILED_BEAR_BREAK ? "FAIL BEAR" : state == EVENT_BULL_CONTINUATION ? "BULL CONT" : state == EVENT_BEAR_CONTINUATION ? "BEAR CONT" : state == EVENT_COMPRESSION ? "COMPRESS" : state == EVENT_TRANSITION ? "TRANSITION" : "RANGE"
+
+f_structure_name(int state) =>
+    state == STRUCT_BULL_IMPULSE ? "B IMP" : state == STRUCT_BULL_HOLD ? "B HOLD" : state == STRUCT_BULL_WEAKENING ? "B WEAK" : state == STRUCT_BEAR_IMPULSE ? "S IMP" : state == STRUCT_BEAR_HOLD ? "S HOLD" : state == STRUCT_BEAR_WEAKENING ? "S WEAK" : "NEUTRAL"
+
+// ============================================================================
+// HAO Guide HUD — tiny plain-language interpreter
+// ============================================================================
+f_hud_market(int ribbonDir, int structState, float slowFlow, float deadband) =>
+    ribbonDir == 1 ? (structState >= STRUCT_BULL_HOLD ? "Bull structure holding" : structState == STRUCT_BULL_WEAKENING or slowFlow < -deadband ? "Bull structure weakening" : "Bull structure") : ribbonDir == -1 ? (structState <= STRUCT_BEAR_HOLD ? "Bear structure holding" : structState == STRUCT_BEAR_WEAKENING or slowFlow > deadband ? "Bear structure weakening" : "Bear structure") : "No clear edge"
+
+f_hud_liquidity(int ribbonDir, float hClose, float pocValue, float slowFlow, float deadband) =>
+    ribbonDir == 1 ? (slowFlow < -deadband ? "Green support weakening" : hClose >= pocValue ? "Green support holding" : "Support under pressure") : ribbonDir == -1 ? (slowFlow > deadband ? "Red resistance weakening" : hClose <= pocValue ? "Red resistance holding" : "Resistance under pressure") : "Liquidity balanced"
+
+f_hud_momentum(float slope, int ribbonDir, float slowFlow, float deadband) =>
+    bool rising = slope > 0.05
+    bool falling = slope < -0.05
+    bool opposed = (ribbonDir == 1 and slowFlow < -deadband) or (ribbonDir == -1 and slowFlow > deadband)
+    rising ? (opposed ? "Momentum rising, structure challenged" : "Momentum rising") : falling ? (opposed ? "Momentum falling, structure challenged" : "Momentum falling") : "Momentum flat"
+
+f_hud_watch(int ribbonDir, float slowFlow, float deadband, int currentEvent) =>
+    currentEvent == EVENT_COMPRESSION ? "Compression: wait for release" : ribbonDir == -1 and slowFlow > deadband ? "Close above POC confirms reversal" : ribbonDir == 1 and slowFlow < -deadband ? "Close below POC confirms reversal" : ribbonDir == 1 ? "Support holds while above POC" : ribbonDir == -1 ? "Resistance holds while below POC" : "Wait for structure to choose side"
+
+f_hud_bg(string role, float intensity, int transparency) =>
+    color base = role == "Bull" ? f_theme_color(theme, "Bull", intensity) : role == "Bear" ? f_theme_color(theme, "Bear", intensity) : role == "Caution" ? color.rgb(166, 105, 28) : role == "Transition" ? color.rgb(88, 72, 155) : color.rgb(42, 48, 56)
+    color.new(base, transparency)
+
+string hudMarketBase = f_hud_market(ribbonState, structureState, flowPressureSlow, ribbonDeadband)
+string hudLiquidityBase = f_hud_liquidity(ribbonState, haClose, poc, flowPressureSlow, ribbonDeadband)
+string hudMomentumBase = f_hud_momentum(momentumSlope, ribbonState, flowPressureSlow, ribbonDeadband)
+string hudWatchBase = f_hud_watch(ribbonState, flowPressureSlow, ribbonDeadband, eventState)
+string hudMarket = hudMode == "Technical" ? hudMarketBase + " | " + f_structure_name(structureState) : hudMarketBase
+string hudLiquidity = hudMode == "Technical" ? hudLiquidityBase + " | POC " + str.tostring(poc, "#.0") : hudLiquidityBase
+string hudMomentum = hudMode == "Technical" ? hudMomentumBase + " | Flow " + str.tostring(flowPressureSlow * 100.0, "#") + "%" : hudMomentumBase
+string hudWatch = hudMode == "Technical" ? hudWatchBase + " | Comp " + str.tostring(compressionScore, "#") : hudWatchBase
+
+bool hudBullChallenge = ribbonState == 1 and flowPressureSlow < -ribbonDeadband
+bool hudBearChallenge = ribbonState == -1 and flowPressureSlow > ribbonDeadband
+string hudMarketRole = ribbonState == 1 ? (hudBullChallenge ? "Caution" : "Bull") : ribbonState == -1 ? (hudBearChallenge ? "Caution" : "Bear") : "Neutral"
+string hudLiquidityRole = ribbonState == 1 ? (hudBullChallenge ? "Caution" : "Bull") : ribbonState == -1 ? (hudBearChallenge ? "Caution" : "Bear") : "Neutral"
+string hudMomentumRole = momentumSlope > 0.05 ? "Bull" : momentumSlope < -0.05 ? "Bear" : "Neutral"
+string hudWatchRole = eventState == EVENT_COMPRESSION ? "Transition" : hudBullChallenge or hudBearChallenge ? "Caution" : ribbonState == 1 ? "Bull" : ribbonState == -1 ? "Bear" : "Neutral"
+string hudTablePosition = hudPositionInput == "Top Left" ? position.top_left : hudPositionInput == "Bottom Right" ? position.bottom_right : position.top_right
+var table hudTable = table.new(hudTablePosition, 2, 4, border_width = 0)
+if barstate.islast
+    bool showHud = hudMode != "Off" and displayMode != "Diagnostic"
+    string marketText = showHud ? hudMarket : ""
+    string liquidityText = showHud ? hudLiquidity : ""
+    string momentumText = showHud ? hudMomentum : ""
+    string watchText = showHud ? hudWatch : ""
+    color marketBg = showHud ? f_hud_bg(hudMarketRole, 0.72, hudTransparency) : na
+    color liquidityBg = showHud ? f_hud_bg(hudLiquidityRole, 0.62, hudTransparency) : na
+    color momentumBg = showHud ? f_hud_bg(hudMomentumRole, 0.52, hudTransparency) : na
+    color watchBg = showHud ? f_hud_bg(hudWatchRole, 0.58, hudTransparency) : na
+    table.cell(hudTable, 0, 0, showHud ? "MARKET" : "", text_color = color.white, bgcolor = marketBg, text_size = size.tiny)
+    table.cell(hudTable, 1, 0, marketText, text_color = color.white, bgcolor = marketBg, text_size = size.tiny)
+    table.cell(hudTable, 0, 1, showHud ? "LIQUIDITY" : "", text_color = color.white, bgcolor = liquidityBg, text_size = size.tiny)
+    table.cell(hudTable, 1, 1, liquidityText, text_color = color.white, bgcolor = liquidityBg, text_size = size.tiny)
+    table.cell(hudTable, 0, 2, showHud ? "MOMENTUM" : "", text_color = color.white, bgcolor = momentumBg, text_size = size.tiny)
+    table.cell(hudTable, 1, 2, momentumText, text_color = color.white, bgcolor = momentumBg, text_size = size.tiny)
+    table.cell(hudTable, 0, 3, showHud ? "WATCH" : "", text_color = color.white, bgcolor = watchBg, text_size = size.tiny)
+    table.cell(hudTable, 1, 3, watchText, text_color = color.white, bgcolor = watchBg, text_size = size.tiny)
+
+bool showEvents = showEventMarkers and f_visible(displayMode, "EVENTS")
+plotshape(showEvents and bullBreakoutAlert ? haLow - 1.0 : na, "Bull Breakout Marker", shape.triangleup, location.absolute, f_theme_color(theme, "Bull", 1.0), size = size.tiny)
+plotshape(showEvents and bearBreakoutAlert ? haHigh + 1.0 : na, "Bear Breakout Marker", shape.triangledown, location.absolute, f_theme_color(theme, "Bear", 1.0), size = size.tiny)
+plotshape(showEvents and failedBullBreakAlert ? haHigh + 0.7 : na, "Failed Bull Marker", shape.xcross, location.absolute, f_theme_color(theme, "Bear", 0.75), size = size.tiny)
+plotshape(showEvents and failedBearBreakAlert ? haLow - 0.7 : na, "Failed Bear Marker", shape.xcross, location.absolute, f_theme_color(theme, "Bull", 0.75), size = size.tiny)
+plotshape(showEvents and bullContinuationAlert ? haLow - 0.5 : na, "Bull Continuation Marker", shape.circle, location.absolute, f_theme_color(theme, "Bull", 0.65), size = size.tiny)
+plotshape(showEvents and bearContinuationAlert ? haHigh + 0.5 : na, "Bear Continuation Marker", shape.circle, location.absolute, f_theme_color(theme, "Bear", 0.65), size = size.tiny)
+
+var table diagTable = table.new(position.top_right, 4, 8, border_width = 0)
+if barstate.islast
+    bool showDiag = f_visible(displayMode, "DIAGNOSTIC")
+    color diagBg = color.new(color.black, 82)
+    color diagLabel = color.silver
+    bool haReady = not na(haOpen) and not na(haHigh) and not na(haLow) and not na(haClose)
+    bool ribbonReady = not na(ribbonLower) and not na(ribbonUpper)
+    string haGeoText = not haReady ? "WAIT" : haGeometryOk ? "OK" : "FAIL"
+    string ribbonGeoText = not ribbonReady ? "WAIT" : ribbonGeometryOk ? "OK" : "FAIL"
+    color haGeoColor = not haReady ? color.gray : haGeometryOk ? color.lime : color.red
+    color ribbonGeoColor = not ribbonReady ? color.gray : ribbonGeometryOk ? color.lime : color.red
+
+    table.cell(diagTable, 0, 0, showDiag ? "HA GEO" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 0, showDiag ? haGeoText : "", text_color = haGeoColor, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 0, showDiag ? "RIBBON GEO" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 0, showDiag ? ribbonGeoText : "", text_color = ribbonGeoColor, bgcolor = diagBg, text_size = size.tiny)
+
+    table.cell(diagTable, 0, 1, showDiag ? "RSI" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 1, showDiag ? str.tostring(rsiCentered, "#.0") : "", text_color = effectiveRsiColor, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 1, showDiag ? "HA-C" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 1, showDiag ? str.tostring(haClose, "#.0") : "", text_color = finalHaColor, bgcolor = diagBg, text_size = size.tiny)
+
+    table.cell(diagTable, 0, 2, showDiag ? "MFM" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 2, showDiag ? str.tostring(mfm, "#.00") : "", text_color = color.white, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 2, showDiag ? "ADL-V" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 2, showDiag ? str.tostring(adlVelocity, "#.0") : "", text_color = color.white, bgcolor = diagBg, text_size = size.tiny)
+
+    table.cell(diagTable, 0, 3, showDiag ? "FLOW" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 3, showDiag ? (flowFinite ? "OK " + str.tostring(flowPressure, "#.00") : "WAIT") : "", text_color = ribbonBaseColor, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 3, showDiag ? "ATR-X" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 3, showDiag ? str.tostring(volFactor, "#.00") : "", text_color = color.white, bgcolor = diagBg, text_size = size.tiny)
+
+    table.cell(diagTable, 0, 4, showDiag ? (useLegacyRibbon ? "L-CEN" : useMemorySurface ? "CTRL-M" : "CTRL") : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 4, showDiag ? str.tostring(ribbonCenter, "#.0") : "", text_color = ribbonBaseColor, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 4, showDiag ? "R-WID" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 4, showDiag ? str.tostring(ribbonWidth, "#.0") : "", text_color = ribbonBaseColor, bgcolor = diagBg, text_size = size.tiny)
+
+    table.cell(diagTable, 0, 5, showDiag ? (useLegacyRibbon ? "L-SHIFT" : useMemorySurface ? "MEM Δ" : "OUTER Δ") : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 5, showDiag ? str.tostring(ribbonShift, "#.0") : "", text_color = ribbonBaseColor, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 5, showDiag ? "POC" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 5, showDiag ? str.tostring(poc, "#.0") : "", text_color = pocBaseColor, bgcolor = diagBg, text_size = size.tiny)
+
+    table.cell(diagTable, 0, 6, showDiag ? "EVENT" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 6, showDiag ? f_event_name(eventState) : "", text_color = color.white, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 6, showDiag ? "STRUCT" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 6, showDiag ? f_structure_name(structureState) : "", text_color = finalHaColor, bgcolor = diagBg, text_size = size.tiny)
+
+    table.cell(diagTable, 0, 7, showDiag ? "CONF" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 1, 7, showDiag ? str.tostring(structureConfidence, "#.00") : "", text_color = color.white, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 2, 7, showDiag ? "COMP" : "", text_color = diagLabel, bgcolor = diagBg, text_size = size.tiny)
+    table.cell(diagTable, 3, 7, showDiag ? str.tostring(compressionScore, "#") : "", text_color = color.white, bgcolor = diagBg, text_size = size.tiny)
+
+bool showBaselineRsi = f_visible(displayMode, "RSI")
+bool showBaselineMa = f_visible(displayMode, "RSI_MA")
+plot(showBaselineRsi and showRsi ? rsiCentered : na, "Centered RSI", color = effectiveRsiColor, linewidth = rsiWidth)
+plot(showBaselineMa and showRsiMa ? rsiMa : na, "RSI MA", color = effectiveRsiMaColor, linewidth = rsiMaWidth)

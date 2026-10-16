@@ -57,6 +57,23 @@ The first working baseline introduced:
 
 The v0.1 ribbon showed unexpectedly useful behavior on several timeframes, so it has been preserved permanently as a legacy engine.
 
+
+### v0.2.1 — Liquidity Memory + HAO Guide HUD
+
+v0.2.1 keeps both earlier ribbon engines and adds a third default research model.
+
+Key changes:
+
+- confirmed structural acceptance before ribbon role reversal
+- opposing flow weakens the active support/resistance surface before it flips
+- fast thickness attack + slow thickness decay for broader liquidity memory
+- tiny four-row **HAO Guide HUD** with plain-language MARKET / LIQUIDITY / MOMENTUM / WATCH explanations
+- state-colored HUD backgrounds with white tiny text
+- **Deep Ocean Adaptive** candle palette as default
+- optional darker **Black Flag** palette
+- Aurora, Classic, Custom and Reference Geometry candle modes
+- v0.2 and v0.1 remain selectable for A/B research
+
 ### v0.2 — Control Surface Calibration
 
 v0.2 focuses primarily on improving the liquidity structure.
@@ -501,8 +518,8 @@ Common options include:
 ## Project Status
 
 ```text
-Current development version: v0.2
-Stage: Reconstruction / Calibration
+Current development version: v0.2.1
+Stage: Reconstruction / Calibration — liquidity memory + HUD
 Primary market: BTCUSDT
 Primary platform: TradingView
 Language: Pine Script v6
